@@ -1,0 +1,1275 @@
+import streamlit as st
+import pandas as pd
+from io import BytesIO
+from datetime import date, datetime, timezone
+import time
+import re
+import uuid
+
+from supabase import create_client, Client
+
+# =========================================================
+# CONFIGURACION
+# =========================================================
+st.set_page_config(
+    page_title="JC Control de Solicitudes — Despacho",
+    page_icon="📝",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+# =========================================================
+# ESTILOS
+# =========================================================
+st.markdown(
+    """
+<style>
+* { box-sizing:border-box; }
+.stApp { background:#020914; color:#f3f4f6; font-family:Arial,Helvetica,sans-serif; }
+.block-container { width:94%; max-width:1450px; padding-top:22px!important; padding-bottom:24px!important; margin:auto; }
+header[data-testid="stHeader"] { background:transparent; }
+div[data-testid="stToolbar"] { display:none; }
+footer { display:none; }
+h1,h2,h3 { color:#f3f4f6!important; font-family:Arial,Helvetica,sans-serif!important; }
+.titulo { text-align:center; margin:4px 0 14px; font-size:30px; font-weight:900; line-height:1.2; width:100%; white-space:nowrap; }
+.stButton>button,.stDownloadButton>button { border:1px solid #273246!important; border-radius:5px!important; min-height:30px!important; height:30px!important; padding:4px 8px!important; font-weight:800!important; color:white!important; background:#17263d!important; font-size:10px!important; }
+.stButton>button:hover,.stDownloadButton>button:hover { filter:brightness(1.18); border-color:#315b86!important; }
+div[data-testid="stForm"] { background:rgba(7,15,29,.55); border:1px solid #273246; border-radius:6px; padding:10px!important; }
+div[data-testid="stForm"] label { color:#cbd5e1!important; font-size:10px!important; font-weight:700!important; }
+div[data-baseweb="input"],div[data-baseweb="select"]>div,div[data-testid="stDateInput"]>div { background:#242630!important; color:#f3f4f6!important; border-radius:5px!important; border-color:transparent!important; min-height:33px!important; }
+div[data-baseweb="input"] input,div[data-testid="stDateInput"] input { color:#f3f4f6!important; font-size:11px!important; }
+div[data-baseweb="select"] span { color:#f3f4f6!important; font-size:11px!important; }
+div[data-baseweb="select"] svg { fill:#f3f4f6!important; }
+div[data-testid="stTextInput"] input { width:100%; height:33px; border:1px solid transparent; border-radius:5px; background:#242630!important; color:#f3f4f6!important; padding:0 9px; font-size:11px; }
+/* =========================================================
+   TABLA JC — ESTILO PROFESIONAL
+   ========================================================= */
+div[data-testid="stDataFrame"],
+div[data-testid="stDataEditor"] {
+    width:100%!important;
+    border:1px solid #30445f!important;
+    border-radius:12px!important;
+    overflow:hidden!important;
+    background:linear-gradient(180deg,#0b1526 0%,#07101d 100%)!important;
+    box-shadow:0 8px 28px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.025)!important;
+}
+
+/* Barra superior del editor */
+div[data-testid="stDataEditor"] > div {
+    border-radius:12px!important;
+}
+
+/* Encabezados */
+div[data-testid="stDataEditor"] [role="columnheader"] {
+    background:#172a43!important;
+    color:#f8fafc!important;
+    font-weight:800!important;
+    border-bottom:1px solid #3a5270!important;
+}
+
+/* Indicadores de color dentro de ESTADO y PRIORIDAD */
+div[data-testid="stDataEditor"] [role="gridcell"] {
+    font-size: 12px !important;
+}
+
+/* Encabezados de acciones */
+div[data-testid="stDataEditor"] [role="columnheader"] {
+    letter-spacing: .2px !important;
+}
+
+/* Botones de edición de la tabla */
+div[data-testid="stDataEditor"] button {
+    border-radius:6px!important;
+}
+
+/* Checkboxes EDITAR / ELIMINAR */
+div[data-testid="stDataEditor"] input[type="checkbox"] {
+    accent-color:#38bdf8!important;
+}
+
+/* Contenedor de la tabla */
+div[data-testid="stDataEditor"] canvas {
+    border-radius:10px!important;
+}
+
+/* Texto que acompaña el contador */
+div[data-testid="stCaptionContainer"] {
+    color:#94a3b8!important;
+    font-size:11px!important;
+    font-weight:700!important;
+    padding:5px 2px 8px!important;
+}
+
+/* Separador */
+hr { border-color:#273246!important; }
+.footer { margin-top:30px; padding:15px 10px; border-top:1px solid #273246; text-align:center; color:#8f9bad; font-size:11px; }
+.footer strong { color:#dbe2ea; }
+.login-wrapper { max-width:380px; margin:8px auto 14px; text-align:center; }
+.login-icon { font-size:30px; line-height:1; margin-bottom:5px; }
+.login-title { font-size:27px; font-weight:800; line-height:1.15; }
+.login-subtitle { font-size:12px; opacity:.62; margin-top:5px; }
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+# =========================================================
+# CONSTANTES
+# =========================================================
+COLS = [
+    "CLIENTE", "NRO SOLICITUD - WO", "TIPO DE SOLICITUD", "CENTRO DE COSTO",
+    "PRIORIDAD", "CANT - ITEMS", "ESTADO DE SOLICITUD", "DIRECCIÓN", "FECHA DE INGRESO"
+]
+RUTA_SHEET = "PROGRAMACION_RUTAS"
+LOCK_TIMEOUT_SECONDS = 15 * 60
+
+CLIENTES = [
+    "Seleccione una opcion", "BANCO SOL", "BANCO BNB", "BANCO FIE", "BANCO FORTALEZA",
+    "PRENDAMAS", "MOLINO ANDINO", "PREVICOR CORREDORES", "WCS-BOLIVIA",
+    "INDUSTRIA Y COMERCIO ALICONSUMO",
+]
+TIPOS = [
+    "Seleccione una opcion", "EXTERNO", "INTERNO - INV.", "INTERNO - BPO.",
+    "INDEXACION - BPO.", "REVISION INTERNA", "SERVICIOS", "ENVIO DE MATERIALES",
+]
+PRIORIDADES = ["Seleccione una opcion", "RUSH", "TURNO SIGUIENTE", "NORMAL"]
+
+CENTROS_COSTO = [
+    "Seleccione una opcion",
+    "100 - REGIONAL CHUQUISACA",	"138 - BANCO NACIONAL DE BOLIVIA - PANDO",	"220 - TEMBLADERANI",	"271 - INGAVI",	"316 - AYACUCHO",	"410 - TAGARETE",	"608 - YACUIBA",	"912 - LABORATORIO LKM BOLIVIA S.A.",	"REGIONAL EL ALTO - 12 DE OCTUBRE",	"REGIONAL EL ALTO - VILLA ADELA",	"REGIONAL LA PAZ - TEMBLADERANI",	"REGIONAL SANTA CRUZ - GUARAYOS",	"REGIONAL SUCRE - CHARCAS",
+    "101 - MERCADO CAMPESINO SUCRE",	"140 - INDEXACION - BNB LA PAZ",	"221 - LA PORTADA",	"272 - SAN ROQUE",	"317 - SOL AMIGO COCHABAMBA",	"411 - TACNA",	"609 - PALMARCITO",	"913 - PHARMATECH BOLIVIANA S.A.",	"REGIONAL EL ALTO - 16 DE JULIO",	"REGIONAL EL ALTO - VILLA DOLORES",	"REGIONAL LA PAZ - VILLA COPACABANA",	"REGIONAL SANTA CRUZ - KILOMETRO 6",	"REGIONAL SUCRE - MESA VERDE",
+    "102 - NORMALIZACIÓN SUCRE",	"141 - INDEXACION - BNB COCHABAMBA",	"222 - PERIFERICA",	"273 - EL KENKO",	"318 - PANAMERICANA",	"500 - REGIONAL POTOSI",	"610 - MERCADO CAMPESINO YACUIBA",	"C008 - POLYSISTEMAS",	"REGIONAL EL ALTO - 21 DE OCTUBRE",	"REGIONAL EL ALTO - VILLA ESPERANZA",	"REGIONAL LA PAZ - VILLA FATIMA",	"REGIONAL SANTA CRUZ - LA RAMADA",	"REGIONAL SUCRE - MONTEAGUDO",
+    "1020153022 - BNB VALORES S.A.",	"142 - INDEXACION - BNB ORURO",	"223 - PAMPAHASI",	"274 - QUISWARAS",	"319 - AGENCIA MOVÍL",	"501 - MERCADO UYUNI",	"612 - INDUSTRIA Y COMERCIO ALICONSUMO S.A.",	"REGIONAL BENI - RIBERALTA",	"REGIONAL EL ALTO - ACHACACHI",	"REGIONAL EL ALTO - VILLA YUNGUYO",	"REGIONAL LA PAZ - ZONA SUR",	"REGIONAL SANTA CRUZ - LOS LOTES",	"REGIONAL SUCRE - PADILLA",
+    "103 - ESPAÑA",	"143 - INDEXACION - BNB TARIJA",	"224 - CHUQUIAGUILLO",	"275 - FRANZ TAMAYO",	"320 - CLIZA",	"502 - SOL AMIGO POTOSI",	"613 - INDUSTRIA Y COMERCIO ALICONSUMO - SANTA CRUZ",	"REGIONAL COCHABAMBA - ALALAY",	"REGIONAL EL ALTO - ACHOCALLA",	"REGIONAL LA PAZ - BUENOS AIRES",	"REGIONAL ORURO - BOLIVAR",	"REGIONAL SANTA CRUZ - LOS POCITOS",	"REGIONAL TARIJA - ANDALUCIA",
+    "104 - SOL AMIGO SUCRE",	"146 - INDEXACIÓN – BNB BENI",	"225 - ACHUMANI",	"276 - VILLA INGENIO",	"321 - VINTO",	"503 - BOULEVARD",	"618 - ALPASUR S.A.",	"REGIONAL COCHABAMBA - CALA CALA",	"REGIONAL EL ALTO - BALLIVIAN",	"REGIONAL LA PAZ - CAMACHO",	"REGIONAL ORURO - ESPAÑA",	"REGIONAL SANTA CRUZ - LOS TUSEQUIS",	"REGIONAL TARIJA - ARANJUEZ",
+    "105 - GERMAN MENDOZA",	"200 - REGIONAL LA PAZ",	"250 - REGIONAL EL ALTO",	"277 - FERROPETROL",	"322 - REPÚBLICA",	"505 - LAS BANDERAS",	"620 - MOLINO ANDINO S.A.",	"REGIONAL COCHABAMBA - CHIMORE",	"REGIONAL EL ALTO - COPACABANA",	"REGIONAL LA PAZ - CARANAVI",	"REGIONAL ORURO - LLALLAGUA",	"REGIONAL SANTA CRUZ - MAIRANA",	"REGIONAL TARIJA - BERMEJO",
+    "106 - CHARCAS",	"201 - SAN PEDRO",	"251 - 16 DE JULIO",	"279 - CHACALTAYA",	"323 - TIQUIPAYA",	"506 - MURILLO",	"700 - REGIONAL SANTA CRUZ",	"REGIONAL COCHABAMBA - COLCAPIRHUA",	"REGIONAL EL ALTO - DESAGUADERO",	"REGIONAL LA PAZ - CHASQUIPAMPA",	"REGIONAL ORURO - PAGADOR",	"REGIONAL SANTA CRUZ - MERCADO ABASTO",	"REGIONAL TARIJA - CAMARGO",
+    "107 - ZUDAÑEZ",	"202 - GARITA",	"252 - LA CEJA",	"280 - LAGUNAS EX PARADA 8",	"324 - QUINTANILLA",	"555 - PREVICOR CORREDORES Y ASES. DE SEG.",	"701 - CASCO VIEJO",	"REGIONAL COCHABAMBA - CRUCE TAQUIÑA",	"REGIONAL EL ALTO - LA CEJA",	"REGIONAL LA PAZ - CHULUMANI",	"REGIONAL ORURO - SUCURSAL ORURO",	"REGIONAL SANTA CRUZ - MERCADO FERRETERO",	"REGIONAL TARIJA - CULPINA",
+    "108 - LAS AMERICAS",	"203 - VILLA FATIMA",	"253 - RIO SECO",	"295 - OFICINA NACIONAL",	"325 - JORDAN",	"557 - PRENDAMAS S.R.L.",	"702 - EL PARI",	"REGIONAL COCHABAMBA - ENTRE RIOS",	"REGIONAL EL ALTO - LIBERTAD",	"REGIONAL LA PAZ - COBIJA",	"REGIONAL POTOSI - 10 DE NOVIEMBRE",	"REGIONAL SANTA CRUZ - MONTERO",	"REGIONAL TARIJA - GUADALQUIVIR",
+    "109 - LAJASTAMBO",	"204 - MIRAFLORES",	"254 - VILLA ADELA",	"300 - REGIONAL COCHABAMBA",	"326 - PLAZA BOLIVAR",	"559 - BANCO FORTALEZA S.A.",	"703 - MUTUALISTA",	"REGIONAL COCHABAMBA - HEROINAS",	"REGIONAL EL ALTO - NUEVO AMANECER",	"REGIONAL LA PAZ - CORIPATA",	"REGIONAL POTOSI - BETANZOS",	"REGIONAL SANTA CRUZ - NORTE",	"REGIONAL TARIJA - GUADALUPE",
+    "1093 - BNB VALORES S.A.",	"205 - EL TEJAR",	"256 - VIACHA",	"301 - ESTEBAN ARCE",	"327 - PETROLERA",	"561 - INTERQUIMICA INDUSTRIAL S.A.",	"704 - 1RO. DE MAYO",	"REGIONAL COCHABAMBA - IVIRGARZAMA",	"REGIONAL EL ALTO - NUEVOS HORIZONTES",	"REGIONAL LA PAZ - COROICO",	"REGIONAL POTOSI - CERRO DE PLATA",	"REGIONAL SANTA CRUZ - PAMPA DE LA ISLA",	"REGIONAL TARIJA - LA TABLADA",
+    "124-1 - BFIE LA PAZ",	"206 - ALONSO DE MENDOZA",	"258 - NORMALIZACIÓN EL ALTO",	"302 - SAN MARTIN",	"328 - LA CHIMBA",	"563 - DHL BOLIVIA S.R.L.",	"705 - MONTERO",	"REGIONAL COCHABAMBA - JORDAN",	"REGIONAL EL ALTO - OFICINA CENTRAL",	"REGIONAL LA PAZ - EL TEJAR",	"REGIONAL POTOSI - COTAGAITA",	"REGIONAL SANTA CRUZ - PLAN 3000",	"REGIONAL TARIJA - LUIS DE FUENTE",
+    "124-2 - BFIE SANTA CRUZ",	"208 - SAN MIGUEL",	"259 - 12 DE OCTUBRE",	"303 - HUAYRA KHASA",	"329 - AMERICA",	"565 - BANCO FORTALEZA S.A. - TARIJA",	"706 - EL TORNO",	"REGIONAL COCHABAMBA - KANATA",	"REGIONAL EL ALTO - PACAJES",	"REGIONAL LA PAZ - GRAN PODER",	"REGIONAL POTOSI - JUNIN",	"REGIONAL SANTA CRUZ - SAN IGNACIO",	"REGIONAL TARIJA - VALLE DE CONCEPCION",
+    "124-3 - BFIE COCHABAMBA",	"209 - BALLIVIAN",	"260 - SENKATA",	"305 - CRUCE TAQUIÑA",	"331 - EL AVION",	"565 - WCS-BOLIVIA",	"709 - PIRAI",	"REGIONAL COCHABAMBA - LA CANCHA",	"REGIONAL EL ALTO - PANAMERICANA",	"REGIONAL LA PAZ - LA PORTADA",	"REGIONAL POTOSI - NUEVA TERMINAL",	"REGIONAL SANTA CRUZ - SAN JULIAN",	"REGIONAL TARIJA - VILLAMONTES",
+    "126 - ORURO - ESPAÑA",	"210 - CAMACHO",	"261 - BOLIVIA",	"306 - QUILLACOLLO",	"332 - VILLA PAGADOR",	"599 - ROCHE BOLIVIA S.R.L.",	"711 - PLAN 3000",	"REGIONAL COCHABAMBA - NATANIEL AGUIRRE",	"REGIONAL EL ALTO - PATACAMAYA",	"REGIONAL LA PAZ - MIRAFLORES",	"REGIONAL POTOSI - SAN ROQUE",	"REGIONAL SANTA CRUZ - SANTOS DUMONT",	"REGIONAL TARIJA - YACUIBA",
+    "130 - BANCO NACIONAL DE BOLIVIA - LA PAZ",	"211 - CRUCE VILLA COPACABANA",	"262 - SATELITE",	"307 - COLCA PIRHUA",	"333 - PACATA",	"600 - REGIONAL TARIJA",	"713 - NORMALIZACIÓN SANTA CRUZ",	"REGIONAL COCHABAMBA - PACATA",	"REGIONAL EL ALTO - RIO SECO",	"REGIONAL LA PAZ - PALOS BLANCOS",	"REGIONAL POTOSI - TUPIZA",	"REGIONAL SANTA CRUZ - SATELITE NORTE",	
+    "131 - BANCO NACIONAL DE BOLIVIA - SANTA CRUZ",	"212 - COTA COTA",	"263 - VILLA DOLORES",	"309 - MUYURINA",	"334 - COLOMI",	"601 - MERCADO CAMPESINO TARIJA",	"715 - LA GUARDIA",	"REGIONAL COCHABAMBA - PETROLERA",	"REGIONAL EL ALTO - ROMERO PAMPA",	"REGIONAL LA PAZ - PAMPAHASI",	"REGIONAL POTOSI - UYUNI",	"REGIONAL SANTA CRUZ - TRES CRUCES",	
+    "132 - BANCO NACIONAL DE BOLIVIA - COCHABAMBA",	"213 - NORMALIZADORA LA PAZ",	"264 - SOL AMIGO EL ALTO",	"310 - NORMALIZACIÓN COCHABAMBA",	"367 - JTI BOLIVIA",	"602 - CENTRO TARIJA",	"716 - ALTO SAN PEDRO",	"REGIONAL COCHABAMBA - PUNATA",	"REGIONAL EL ALTO - SANTIAGO",	"REGIONAL LA PAZ - PERIFERICA",	"REGIONAL POTOSI - VILLAZON",	"REGIONAL SANTA CRUZ - VILLA 1RO DE MAYO",	
+    "133 - BANCO NACIONAL DE BOLIVIA - SUCRE",	"214 - SOL AMIGO LA PAZ",	"265 - AGENCIA MOVÍL",	"311 - RECAUDADORA JORDAN",	"400 - REGIONAL ORURO",	"603 - SUR",	"718 - NORTE",	"REGIONAL COCHABAMBA - QUILLACOLLO",	"REGIONAL EL ALTO - SATELITE",	"REGIONAL LA PAZ - PLAZA EGUINO",	"REGIONAL SANTA CRUZ - ALTO SAN PEDRO",	"REGIONAL SANTA CRUZ - VILLA PRIMERO DE MAYO",	
+    "134 - BANCO NACIONAL DE BOLIVIA - ORURO",	"216 - GRAN PODER",	"266 - MERCADO EL CARMEN RÍO SECO",	"312 - SACABA",	"401 - CENTRAL",	"604 - SOL AMIGO TARIJA",	"719 - SOL AMIGO SANTA CRUZ",	"REGIONAL COCHABAMBA - SACABA",	"REGIONAL EL ALTO - SENKATA",	"REGIONAL LA PAZ - RURRENABAQUE",	"REGIONAL SANTA CRUZ - BELEN",	"REGIONAL SANTA CRUZ - VIRGEN DE LUJAN",	
+    "135 - BANCO NACIONAL DE BOLIVIA - POTOSI",	"217 - VINO TINTO",	"267 - SANTIAGO II",	"313 - VILLA GALINDO",	"407 - NORMALIZACIÓN ORURO",	"605 - 15 DE ABRIL",	"721 - ARROYO CONCEPCIÓN",	"REGIONAL COCHABAMBA - SAN MARTIN",	"REGIONAL EL ALTO - TERMINAL",	"REGIONAL LA PAZ - SAN MIGUEL",	"REGIONAL SANTA CRUZ - CASCO VIEJO",	"REGIONAL SANTA CRUZ - WARNES",	
+    "136 - BANCO NACIONAL DE BOLIVIA - TARIJA",	"218 - VILLA ARMONIA",	"269 - VENTILLA",	"314 - PUNATA",	"408 - PUNTO AMIGO ORURO",	"606 - NORMALIZACIÓN TARIJA",	"722 - AGENCIA MÓVIL STC",	"REGIONAL COCHABAMBA - TAMBORADA",	"REGIONAL EL ALTO - VENTILLA CALAMARCA",	"REGIONAL LA PAZ - SAN PEDRO",	"REGIONAL SANTA CRUZ - EL CARMEN",	"REGIONAL SANTA CRUZ - YAPACANI",	
+    "137 - BANCO NACIONAL DE BOLIVIA - BENI",	"219 - OBRAJES",	"270 - 12 DE OCTUBRE",	"315 - REMESADORA",	"409 - VIRGEN DEL SOCAVÓN",	"607 - TABLADITA",	"723 - PAMPA DE LA ISLA",	"REGIONAL COCHABAMBA - VINTO",	"REGIONAL EL ALTO - VIACHA",	"REGIONAL LA PAZ - SOPOCACHI",	"REGIONAL SANTA CRUZ - EQUIPETROL",	"REGIONAL SUCRE - 25 DE MAYO",	
+
+]
+ESTADOS = [
+    "Seleccione una opcion", "POR EXTRAER", "POR REASIGNAR", "POR ENVIAR",
+    "ENTREGADO", "ENVIADO", "ANULADO", "POR ETIQUETAR",
+]
+DIRECCIONES = [
+    "Seleccione una opcion", "POLYSISTEMAS", "EVARISTO VALLE", "LA PAZ - CAMACHO",
+    "SAN PEDRO OF NAL", "SAN MIGUEL", "ZONA SUR", "12 DE OCTUBLE", "PALENQUE",
+    "SATELITE", "COCHABAMBA", "SANTA CRUZ", "SUCRE", "ORURO", "POTOSI",
+    "Banco Sol", "Banco BNB", "Banco Fie", "Molino Andino", "Prendamas",
+    "Banco Fortaleza", "Previcor Corredores", "Wcs - Bolivia", "Banco Nacional de Bolivia Oruro",
+    "Industria y comercio Aliconsumo", "Banco Nacional de Bolivia - La Paz",
+    "Banco Nacional de Bolivia Sucre", "Banco Nacinal de Bolivia Tarija", "Banco Nacional de Bolivia Potosi",
+]
+REGIONALES = ["Seleccione una opcion", "LA PAZ", "COCHABAMBA", "SANTA CRUZ", "SUCRE", "ORURO", "POTOSI", "TARIJA", "PANDO", "OTRA"]
+ZONAS = ["Seleccione una opcion", "ZONA SUR", "ZONA ESTE", "ZONA CENTRO", "ZONA NORTE", "EL ALTO", "PROVINCIA", "OTRA"]
+RUTA_COLS = ["REGIONAL", "CENTRO DE ACOPIO", "AGENCIAS", "FECHA LIMITE DE INGRESO (SE1)", "FECHA LIMITE DE INGRESO (SR1)", "FECHA DE RECOJO"]
+
+# =========================================================
+# SESSION STATE
+# =========================================================
+def ss(name, default):
+    if name not in st.session_state:
+        st.session_state[name] = default
+
+ss("rows", None)
+ss("rutas", None)
+ss("page", "solicitudes")
+ss("form_version", 0)
+ss("tabla_version", 0)
+ss("ruta_form_version", 0)
+ss("editing", None)
+ss("editing_key", "")
+ss("session_id", uuid.uuid4().hex)
+ss("registro_activo", False)
+ss("ruta_activo", False)
+ss("usuario_nombre", "")
+ss("autenticado", False)
+
+# =========================================================
+# SUPABASE
+# =========================================================
+@st.cache_resource
+def obtener_supabase() -> Client:
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = (
+            st.secrets.get("SUPABASE_SECRET_KEY")
+            or st.secrets.get("SUPABASE_SERVICE_ROLE_KEY")
+            or st.secrets.get("SUPABASE_KEY")
+        )
+    except Exception as e:
+        raise RuntimeError("Configura SUPABASE_URL y SUPABASE_KEY en Streamlit Secrets.") from e
+    if not url or not key:
+        raise RuntimeError("Faltan SUPABASE_URL y/o SUPABASE_KEY en Streamlit Secrets.")
+    return create_client(url, key)
+
+
+def db():
+    return obtener_supabase()
+
+
+def normalizar(v):
+    return str(v if pd.notna(v) else "").strip().upper()
+
+# =========================================================
+# SOLICITUDES
+# =========================================================
+def cargar_solicitudes_supabase():
+    response = db().table("solicitudes").select("*").order("id", desc=False).execute()
+    data = response.data or []
+    rows = []
+    for r in data:
+        rows.append({
+            "_ID_": r.get("id"),
+            "CLIENTE": r.get("cliente", ""),
+            "NRO SOLICITUD - WO": r.get("nro_solicitud_wo", ""),
+            "TIPO DE SOLICITUD": r.get("tipo_solicitud", ""),
+            "CENTRO DE COSTO": r.get("centro_costo", ""),
+            "PRIORIDAD": r.get("prioridad", ""),
+            "CANT - ITEMS": r.get("cantidad_items", 0),
+            "ESTADO DE SOLICITUD": r.get("estado_solicitud", ""),
+            "DIRECCIÓN": r.get("direccion", ""),
+            "FECHA DE INGRESO": r.get("fecha_ingreso", ""),
+        })
+    return pd.DataFrame(rows, columns=["_ID_"] + COLS).fillna("")
+
+
+def guardar_solicitud_supabase(nuevo, registro_id=None):
+    payload = {
+        "cliente": nuevo["CLIENTE"],
+        "nro_solicitud_wo": nuevo["NRO SOLICITUD - WO"],
+        "tipo_solicitud": nuevo["TIPO DE SOLICITUD"],
+        "centro_costo": nuevo.get("CENTRO DE COSTO", ""),
+        "prioridad": nuevo["PRIORIDAD"],
+        "cantidad_items": int(nuevo["CANT - ITEMS"]),
+        "estado_solicitud": nuevo["ESTADO DE SOLICITUD"],
+        "direccion": nuevo["DIRECCIÓN"],
+        "fecha_ingreso": nuevo["FECHA DE INGRESO"],
+    }
+    q = db().table("solicitudes")
+    return q.update(payload).eq("id", int(registro_id)).execute() if registro_id else q.insert(payload).execute()
+
+
+def eliminar_solicitudes_supabase(ids):
+    for registro_id in ids:
+        db().table("solicitudes").delete().eq("id", int(registro_id)).execute()
+
+def cargar_solicitudes_mes_supabase(fecha_inicio, fecha_fin_exclusiva):
+    response = (
+        db()
+        .table("solicitudes")
+        .select("*")
+        .gte("fecha_ingreso", fecha_inicio.isoformat())
+        .lt("fecha_ingreso", fecha_fin_exclusiva.isoformat())
+        .order("fecha_ingreso", desc=False)
+        .execute()
+    )
+    data = response.data or []
+    rows = []
+    for r in data:
+        rows.append({
+            "_ID_": r.get("id"),
+            "CLIENTE": r.get("cliente", ""),
+            "NRO SOLICITUD - WO": r.get("nro_solicitud_wo", ""),
+            "TIPO DE SOLICITUD": r.get("tipo_solicitud", ""),
+            "CENTRO DE COSTO": r.get("centro_costo", ""),
+            "PRIORIDAD": r.get("prioridad", ""),
+            "CANT - ITEMS": r.get("cantidad_items", 0),
+            "ESTADO DE SOLICITUD": r.get("estado_solicitud", ""),
+            "DIRECCIÓN": r.get("direccion", ""),
+            "FECHA DE INGRESO": r.get("fecha_ingreso", ""),
+        })
+    return pd.DataFrame(rows, columns=["_ID_"] + COLS).fillna("")
+
+# =========================================================
+# PROGRAMACION DE RUTAS
+# La tabla programacion_rutas usa columnas directas:
+# id, regional, centro_acopio, agencias,
+# fecha_limite_ingreso_se1, fecha_limite_ingreso_sr1, fecha_recojo.
+# =========================================================
+def cargar_rutas_supabase():
+    response = (
+        db()
+        .table("programacion_rutas")
+        .select("id, regional, centro_acopio, agencias, fecha_limite_ingreso_se1, fecha_limite_ingreso_sr1, fecha_recojo")
+        .order("id", desc=False)
+        .execute()
+    )
+    data = response.data or []
+    rows = []
+    for r in data:
+        rows.append({
+            "_ID_RUTA_": r.get("id"),
+            "REGIONAL": r.get("regional", ""),
+            "CENTRO DE ACOPIO": r.get("centro_acopio", ""),
+            "AGENCIAS": r.get("agencias", ""),
+            "FECHA LIMITE DE INGRESO (SE1)": r.get("fecha_limite_ingreso_se1", ""),
+            "FECHA LIMITE DE INGRESO (SR1)": r.get("fecha_limite_ingreso_sr1", ""),
+            "FECHA DE RECOJO": r.get("fecha_recojo", ""),
+        })
+    return pd.DataFrame(rows, columns=["_ID_RUTA_"] + RUTA_COLS).fillna("")
+
+
+def guardar_ruta_supabase(datos, ruta_id=None):
+    payload = {
+        "regional": datos["REGIONAL"],
+        "centro_acopio": datos["CENTRO DE ACOPIO"],
+        "agencias": datos["AGENCIAS"],
+        "fecha_limite_ingreso_se1": datos["FECHA LIMITE DE INGRESO (SE1)"],
+        "fecha_limite_ingreso_sr1": datos["FECHA LIMITE DE INGRESO (SR1)"],
+        "fecha_recojo": datos["FECHA DE RECOJO"],
+    }
+    q = db().table("programacion_rutas")
+    if ruta_id:
+        return q.update(payload).eq("id", int(ruta_id)).execute()
+    return q.insert(payload).execute()
+
+
+def eliminar_ruta_supabase(ruta_id):
+    return db().table("programacion_rutas").delete().eq("id", int(ruta_id)).execute()
+
+
+# =========================================================
+# BLOQUEO
+# =========================================================
+def _ahora_utc_iso():
+    """Devuelve una fecha/hora UTC compatible con PostgreSQL timestamptz."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _bloqueo_expirado(valor):
+    """Comprueba si last_activity (timestamptz o valor antiguo Unix) expiró."""
+    if valor in (None, "", 0, "0"):
+        return True
+
+    try:
+        # Compatibilidad con registros antiguos que pudieron guardar time.time().
+        if isinstance(valor, (int, float)):
+            ultima = datetime.fromtimestamp(float(valor), tz=timezone.utc)
+        else:
+            texto = str(valor).strip()
+            try:
+                numero = float(texto)
+                ultima = datetime.fromtimestamp(numero, tz=timezone.utc)
+            except ValueError:
+                ultima = pd.to_datetime(texto, utc=True, errors="coerce")
+                if pd.isna(ultima):
+                    return True
+                ultima = ultima.to_pydatetime()
+
+        if ultima.tzinfo is None:
+            ultima = ultima.replace(tzinfo=timezone.utc)
+
+        return (datetime.now(timezone.utc) - ultima).total_seconds() > LOCK_TIMEOUT_SECONDS
+    except Exception:
+        return True
+
+
+def leer_bloqueo_edicion():
+    try:
+        response = db().table("app_locks").select("*").eq("id", 1).maybe_single().execute()
+        row = response.data
+        if not row or not row.get("owner_id"):
+            return None
+
+        if _bloqueo_expirado(row.get("last_activity")):
+            liberar_bloqueo_edicion(force=True)
+            return None
+
+        return row
+    except Exception:
+        return None
+
+
+def adquirir_bloqueo_edicion(motivo="registro"):
+    usuario = (st.session_state.get("usuario_nombre") or "Usuario").strip()
+    session_id = st.session_state.session_id
+    actual = leer_bloqueo_edicion()
+
+    if actual and actual.get("owner_id") != session_id:
+        return False, actual
+
+    # IMPORTANTE:
+    # app_locks.last_activity es timestamp with time zone (timestamptz).
+    # No debemos enviar time.time(), porque devuelve un Unix timestamp
+    # como 1788320350.168386 y PostgreSQL lo rechaza como fecha.
+    payload = {
+        "id": 1,
+        # app_locks.recurso es NOT NULL en Supabase.
+        # Usamos el motivo de la operación como recurso para que
+        # nunca se envíe NULL a esa columna.
+        "recurso": str(motivo or "registro").strip() or "registro",
+        "owner_id": session_id,
+        "usuario": usuario,
+        "last_activity": _ahora_utc_iso(),
+        "motivo": str(motivo or "registro").strip() or "registro",
+    }
+
+    db().table("app_locks").upsert(payload, on_conflict="id").execute()
+    st.session_state.registro_activo = True
+    return True, payload
+
+
+def renovar_bloqueo_edicion():
+    if not st.session_state.get("registro_activo") and not st.session_state.get("ruta_activo"):
+        return
+
+    try:
+        db().table("app_locks").update(
+            {"last_activity": _ahora_utc_iso()}
+        ).eq("id", 1).eq("owner_id", st.session_state.session_id).execute()
+    except Exception:
+        pass
+
+
+def liberar_bloqueo_edicion(force=False):
+    try:
+        q = db().table("app_locks").delete().eq("id", 1)
+        if not force:
+            q = q.eq("owner_id", st.session_state.session_id)
+        q.execute()
+    except Exception:
+        pass
+    st.session_state.registro_activo = False
+    st.session_state.ruta_activo = False
+
+# =========================================================
+# EXPORTAR EXCEL
+# =========================================================
+
+def resumen_tipo_solicitud_wo(df):
+    """Cuenta SE1, SE2, SE3, SR1 y SR2 en la columna NRO SOLICITUD - WO."""
+    tipos = ["SE1", "SE2", "SE3", "SR1", "SR2"]
+    conteo = {tipo: 0 for tipo in tipos}
+
+    if df is None or df.empty or "NRO SOLICITUD - WO" not in df.columns:
+        return conteo
+
+    serie = df["NRO SOLICITUD - WO"].fillna("").astype(str).str.upper()
+    for tipo in tipos:
+        conteo[tipo] = int(
+            serie.apply(
+                lambda valor: len(re.findall(rf"(?<![A-Z0-9]){tipo}(?![A-Z0-9])", valor))
+            ).sum()
+        )
+    return conteo
+
+
+def excel_bytes_mensual(df):
+    """Genera el respaldo mensual con detalle completo y hojas de resumen."""
+    out = BytesIO()
+    datos = df.drop(columns=["_ID_"], errors="ignore").copy()
+
+    # Asegurar que NRO SOLICITUD - WO esté incluido y visible.
+    columnas_preferidas = [
+        "NRO SOLICITUD - WO", "CLIENTE", "TIPO DE SOLICITUD",
+        "CENTRO DE COSTO", "PRIORIDAD", "CANT - ITEMS",
+        "ESTADO DE SOLICITUD", "DIRECCIÓN", "FECHA DE INGRESO"
+    ]
+    columnas = [c for c in columnas_preferidas if c in datos.columns]
+    resto = [c for c in datos.columns if c not in columnas]
+    datos = datos[columnas + resto]
+
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
+        datos.to_excel(writer, sheet_name="SOLICITUDES", index=False)
+
+        # Resumen por estado
+        if "ESTADO DE SOLICITUD" in datos.columns:
+            resumen_estado = (
+                datos["ESTADO DE SOLICITUD"]
+                .fillna("SIN ESTADO")
+                .astype(str)
+                .value_counts()
+                .rename_axis("ESTADO DE SOLICITUD")
+                .reset_index(name="CANTIDAD")
+            )
+        else:
+            resumen_estado = pd.DataFrame(columns=["ESTADO DE SOLICITUD", "CANTIDAD"])
+        resumen_estado.to_excel(writer, sheet_name="RESUMEN_ESTADO", index=False)
+
+        # Resumen por prioridad
+        if "PRIORIDAD" in datos.columns:
+            resumen_prioridad = (
+                datos["PRIORIDAD"]
+                .fillna("SIN PRIORIDAD")
+                .astype(str)
+                .value_counts()
+                .rename_axis("PRIORIDAD")
+                .reset_index(name="CANTIDAD")
+            )
+        else:
+            resumen_prioridad = pd.DataFrame(columns=["PRIORIDAD", "CANTIDAD"])
+        resumen_prioridad.to_excel(writer, sheet_name="RESUMEN_PRIORIDAD", index=False)
+
+        # Resumen de tipos SE/SR desde NRO SOLICITUD - WO.
+        # Se construye directamente para evitar referencias a variables locales
+        # que puedan quedar sin inicializar al cambiar de mes.
+        conteo_wo = resumen_tipo_solicitud_wo(datos)
+        pd.DataFrame(
+            {
+                "TIPO WO": list(conteo_wo.keys()),
+                "CANTIDAD": list(conteo_wo.values()),
+            }
+        ).to_excel(writer, sheet_name="RESUMEN_SE_SR", index=False)
+
+        # Resumen general, incluyendo cantidad de solicitudes/WO.
+        resumen_general = pd.DataFrame({
+            "INDICADOR": [
+                "TOTAL DE REGISTROS",
+                "TOTAL DE SOLICITUDES / WO",
+                "TOTAL DE ITEMS",
+            ],
+            "VALOR": [
+                len(datos),
+                datos["NRO SOLICITUD - WO"].nunique(dropna=True) if "NRO SOLICITUD - WO" in datos.columns else 0,
+                pd.to_numeric(datos["CANT - ITEMS"], errors="coerce").fillna(0).sum()
+                if "CANT - ITEMS" in datos.columns else 0,
+            ]
+        })
+        resumen_general.to_excel(writer, sheet_name="RESUMEN_GENERAL", index=False)
+
+        # Ajustar ancho de columnas para facilitar la lectura.
+        for ws in writer.book.worksheets:
+            for col_cells in ws.columns:
+                max_len = 0
+                for cell in col_cells:
+                    value = "" if cell.value is None else str(cell.value)
+                    max_len = max(max_len, len(value))
+                ws.column_dimensions[col_cells[0].column_letter].width = min(max(max_len + 2, 12), 45)
+
+    return out.getvalue()
+
+def excel_bytes(df, rutas=None):
+    out = BytesIO()
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
+        df.drop(columns=["_ID_"], errors="ignore").to_excel(writer, sheet_name="SOLICITUDES", index=False)
+        if rutas is not None and not rutas.empty:
+            rutas.drop(columns=["_ID_RUTA_"], errors="ignore").to_excel(writer, sheet_name=RUTA_SHEET, index=False)
+    return out.getvalue()
+
+# =========================================================
+# LOGIN
+# =========================================================
+def obtener_usuarios_login():
+    try:
+        bloque = st.secrets.get("usuarios", {})
+        if hasattr(bloque, "items"):
+            return {str(k).strip().lower(): str(v) for k, v in bloque.items()}
+    except Exception:
+        pass
+    return {}
+
+
+def nombres_usuarios():
+    return {
+        "admin": "admin",
+        "alfredo": "Alfredo",
+        "jonathan": "Jonathan",
+        "luis": "Luis",
+    }
+
+
+def obtener_rol():
+    usuario = str(st.session_state.get("usuario_login", "") or "").strip().lower()
+    return {
+        "admin": "admin",
+        "alfredo": "usuario",
+        "jonathan": "usuario",
+        "luis": "usuario",
+    }.get(usuario, "usuario")
+
+
+def es_admin():
+    return obtener_rol() == "admin"
+
+
+def puede_modificar():
+    return obtener_rol() in ("admin", "usuario")
+
+
+def mostrar_login():
+    st.markdown(
+        '<div class="login-wrapper"><div class="login-icon">🔐</div><div class="login-title">Iniciar sesión</div><div class="login-subtitle">Acceso al sistema de despacho</div></div>',
+        unsafe_allow_html=True,
+    )
+    usuarios = obtener_usuarios_login()
+    if not usuarios:
+        st.error("❌ No hay usuarios configurados en Streamlit Secrets.")
+        return
+    _, centro, _ = st.columns([1, 1.25, 1])
+    with centro:
+        with st.form("login_jc_control"):
+            usuario = st.text_input("👤 Usuario", placeholder="Ingrese su usuario")
+            password = st.text_input("🔑 Contraseña", type="password", placeholder="Ingrese su contraseña")
+            ingresar = st.form_submit_button("🔐 INGRESAR", use_container_width=True)
+    if ingresar:
+        key = usuario.strip().lower()
+        if key in usuarios and password == usuarios[key]:
+            st.session_state.autenticado = True
+            st.session_state.usuario_login = key
+            st.session_state.usuario_nombre = nombres_usuarios().get(key, usuario.strip())
+            st.rerun()
+        else:
+            st.error("❌ Usuario o contraseña incorrectos.")
+
+# =========================================================
+# FORMULARIO PROGRAMACION DE RUTAS
+# =========================================================
+def formulario_nueva_ruta():
+    st.markdown("### ➕ Registrar programación de ruta")
+    with st.form(f"ruta_form_{st.session_state.ruta_form_version}", clear_on_submit=False):
+        a, b = st.columns(2)
+        with a:
+            regional = st.selectbox("🌎 Regional", REGIONALES)
+            centro_acopio = st.text_input("🏢 Centro de acopio", placeholder="Ej.: POLYSISTEMAS")
+            agencias = st.text_input("🏪 Agencias", placeholder="Ej.: San Miguel, Zona Sur")
+        with b:
+            fecha_se1 = st.date_input("📅 Fecha límite de ingreso (SE1)", value=date.today())
+            fecha_sr1 = st.date_input("📅 Fecha límite de ingreso (SR1)", value=date.today())
+            fecha_recojo = st.date_input("🚚 Fecha de recojo", value=date.today())
+
+        x, y = st.columns([4, 1])
+        with x:
+            guardar = st.form_submit_button("💾 GUARDAR PROGRAMACIÓN", use_container_width=True)
+        with y:
+            limpiar = st.form_submit_button("✕ CANCELAR", use_container_width=True)
+
+    if limpiar:
+        liberar_bloqueo_edicion()
+        st.session_state.ruta_form_version += 1
+        st.rerun()
+
+    if guardar:
+        if regional == REGIONALES[0]:
+            st.error("Selecciona una Regional antes de guardar.")
+            return
+        if not centro_acopio.strip():
+            st.error("Ingresa el Centro de Acopio antes de guardar.")
+            return
+        if not agencias.strip():
+            st.error("Ingresa las Agencias antes de guardar.")
+            return
+
+        if fecha_se1 > fecha_recojo or fecha_sr1 > fecha_recojo:
+            st.error("La fecha de recojo no puede ser anterior a las fechas límite de ingreso.")
+            return
+
+        try:
+            datos = {
+                "REGIONAL": regional,
+                "CENTRO DE ACOPIO": centro_acopio.strip(),
+                "AGENCIAS": agencias.strip(),
+                "FECHA LIMITE DE INGRESO (SE1)": fecha_se1.isoformat(),
+                "FECHA LIMITE DE INGRESO (SR1)": fecha_sr1.isoformat(),
+                "FECHA DE RECOJO": fecha_recojo.isoformat(),
+            }
+            guardar_ruta_supabase(datos)
+            st.session_state.rutas = cargar_rutas_supabase()
+            liberar_bloqueo_edicion()
+            st.session_state.ruta_form_version += 1
+            st.success("✅ Programación de ruta guardada correctamente en Supabase.")
+            st.rerun()
+        except Exception as e:
+            liberar_bloqueo_edicion()
+            st.error(f"❌ No se pudo guardar la programación: {e}")
+
+
+# =========================================================
+# CABECERA Y LOGIN
+# =========================================================
+st.markdown('<div class="titulo">📝 JC CONTROL DE SOLICITUDES — DESPACHO</div>', unsafe_allow_html=True)
+
+if not st.session_state.autenticado:
+    mostrar_login()
+    st.stop()
+
+u1, u2, u3 = st.columns([1, 3, 1])
+with u1:
+    st.markdown(f"**👤 Usuario:** `{st.session_state.usuario_nombre}`")
+    if es_admin():
+        st.caption("🔴 ADMIN — ACCESO TOTAL")
+    else:
+        st.caption("🟢 USUARIO — REGISTRAR Y EDITAR")
+with u2:
+    st.markdown("**🗄️ Base de datos:** `PostgreSQL`")
+with u3:
+    if st.button("🚪 SALIR", use_container_width=True):
+        liberar_bloqueo_edicion()
+        for k in ["rows", "rutas"]:
+            st.session_state[k] = None
+        st.session_state.editing = None
+        st.session_state.editing_key = ""
+        st.session_state.usuario_nombre = ""
+        st.session_state.autenticado = False
+        st.session_state.page = "solicitudes"
+        st.rerun()
+
+# =========================================================
+# CARGA INICIAL
+# =========================================================
+if st.session_state.rows is None or st.session_state.rutas is None:
+    try:
+        st.session_state.rows = cargar_solicitudes_supabase()
+        st.session_state.rutas = cargar_rutas_supabase()
+    except Exception as e:
+        st.error(f"❌ No se pudieron cargar los datos desde Supabase: {e}")
+        st.stop()
+
+# =========================================================
+# NAVEGACION
+# =========================================================
+c1, c2, c3 = st.columns([1, 1, 4])
+with c1:
+    if st.button("🔄 ACTUALIZAR", use_container_width=True):
+        try:
+            st.session_state.rows = cargar_solicitudes_supabase()
+            st.session_state.rutas = cargar_rutas_supabase()
+            st.session_state.editing = None
+            st.session_state.editing_key = ""
+            st.toast("🔄 Datos actualizados desde PostgreSQL.", icon="🔄")
+            st.rerun()
+        except Exception as e:
+            st.error(f"❌ No se pudieron actualizar los datos: {e}")
+with c2:
+    if st.button("🗓️ PROGRAMACIÓN DE RUTAS", use_container_width=True):
+        liberar_bloqueo_edicion()
+        st.session_state.editing = None
+        st.session_state.editing_key = ""
+        st.session_state.page = "rutas"
+        st.rerun()
+
+# =========================================================
+# PAGINA PROGRAMACION DE RUTAS
+# =========================================================
+if st.session_state.page == "rutas":
+    st.subheader("🗓️ PROGRAMACIÓN DE RUTAS")
+    st.caption("Registro y consulta de programación directamente desde PostgreSQL.")
+
+    if st.button("⬅ VOLVER A SOLICITUDES"):
+        liberar_bloqueo_edicion()
+        st.session_state.page = "solicitudes"
+        st.rerun()
+
+    bloqueo = leer_bloqueo_edicion()
+    if bloqueo and bloqueo.get("owner_id") != st.session_state.session_id:
+        st.warning(f"🔒 {bloqueo.get('usuario', 'Otro usuario')} está realizando una operación de edición. Espera para registrar una ruta.")
+    else:
+        if not st.session_state.ruta_activo:
+            if st.button("🔐 INICIAR REGISTRO DE RUTA"):
+                ok, info = adquirir_bloqueo_edicion("nueva programación de ruta")
+                if ok:
+                    st.session_state.ruta_activo = True
+                    st.session_state.ruta_form_version += 1
+                    st.rerun()
+                else:
+                    st.warning(f"🔒 {info.get('usuario', 'Otro usuario')} está utilizando el sistema.")
+
+    if st.session_state.ruta_activo:
+        renovar_bloqueo_edicion()
+        st.success("🔐 Registro de ruta activo. La edición está reservada para este usuario.")
+        formulario_nueva_ruta()
+
+    st.markdown("### 📋 Programaciones registradas")
+    rutas = st.session_state.rutas
+    if rutas is None or rutas.empty:
+        st.info("No hay programaciones registradas todavía.")
+    else:
+        f1, f2 = st.columns([1, 2])
+        with f1:
+            regional_filtro = st.selectbox("Regional", ["TODOS"] + REGIONALES[1:], key="ruta_regional")
+        with f2:
+            buscar_ruta = st.text_input("Buscar", placeholder="Centro de acopio, agencia o regional...", key="buscar_ruta")
+
+        datos = rutas.copy()
+        if regional_filtro != "TODOS":
+            datos = datos[datos["REGIONAL"].map(normalizar).eq(normalizar(regional_filtro))]
+        if buscar_ruta:
+            texto = normalizar(buscar_ruta)
+            mask = datos.astype(str).apply(lambda col: col.map(lambda x: texto in normalizar(x))).any(axis=1)
+            datos = datos[mask]
+
+        st.caption(f"📋 {len(datos)} de {len(rutas)} programaciones encontradas")
+        tabla_rutas = datos.drop(columns=["_ID_RUTA_"], errors="ignore").copy()
+
+        # Formato de fechas para que la tabla sea más compacta y uniforme.
+        for col in [
+            "FECHA LIMITE DE INGRESO (SE1)",
+            "FECHA LIMITE DE INGRESO (SR1)",
+            "FECHA DE RECOJO",
+        ]:
+            if col in tabla_rutas.columns:
+                tabla_rutas[col] = pd.to_datetime(
+                    tabla_rutas[col], errors="coerce"
+                )
+
+        st.dataframe(
+            tabla_rutas,
+            use_container_width=True,
+            hide_index=True,
+            height=500,
+            column_config={
+                "REGIONAL": st.column_config.TextColumn(
+                    "REGIONAL", width=120
+                ),
+                "CENTRO DE ACOPIO": st.column_config.TextColumn(
+                    "CENTRO DE ACOPIO", width=190
+                ),
+                "AGENCIAS": st.column_config.TextColumn(
+                    "AGENCIAS", width=250
+                ),
+                "FECHA LIMITE DE INGRESO (SE1)": st.column_config.DateColumn(
+                    "FECHA LÍMITE SE1", format="DD/MM/YYYY", width=150
+                ),
+                "FECHA LIMITE DE INGRESO (SR1)": st.column_config.DateColumn(
+                    "FECHA LÍMITE SR1", format="DD/MM/YYYY", width=150
+                ),
+                "FECHA DE RECOJO": st.column_config.DateColumn(
+                    "FECHA DE RECOJO", format="DD/MM/YYYY", width=145
+                ),
+            },
+        )
+        _, col_descarga_ruta, _ = st.columns([1, 2, 1])
+        with col_descarga_ruta:
+            st.download_button(
+                "📥 DESCARGAR PROGRAMACIÓN",
+                data=excel_bytes(st.session_state.rows, datos),
+                file_name=f"PROGRAMACION_RUTAS_{date.today().isoformat()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+
+    st.markdown('<div class="footer"><strong>JC Control de Solicitudes — Almacén</strong><br>©JuanCarlosRamos - 2026 — Todos los derechos reservados</div>', unsafe_allow_html=True)
+    st.stop()
+
+
+# =========================================================
+# PAGINA SOLICITUDES
+# =========================================================
+df = st.session_state.rows
+st.markdown("### 📁 Base de datos compartida")
+st.caption("🗄️ Supabase PostgreSQL · Datos compartidos entre todos los usuarios.")
+
+bloqueo_actual = leer_bloqueo_edicion()
+if bloqueo_actual and bloqueo_actual.get("owner_id") != st.session_state.session_id:
+    st.warning(f"🔒 BASE DE DATOS EN USO — {bloqueo_actual.get('usuario', 'otro usuario')} está registrando o editando. Puedes consultar, pero espera para modificar.")
+
+# =========================================================
+# NUEVA SOLICITUD
+# =========================================================
+if st.session_state.editing is None and not st.session_state.registro_activo:
+    if st.button("🔐 INICIAR NUEVA SOLICITUD"):
+        ok, info = adquirir_bloqueo_edicion("nueva solicitud")
+        if ok:
+            st.session_state.registro_activo = True
+            st.session_state.form_version += 1
+            st.rerun()
+        else:
+            st.warning(f"🔒 {info.get('usuario', 'Otro usuario')} está utilizando el sistema.")
+
+# =========================================================
+# FORMULARIO SOLICITUD
+# =========================================================
+if st.session_state.registro_activo or st.session_state.editing is not None:
+    renovar_bloqueo_edicion()
+    editing = st.session_state.editing
+    if editing is not None and editing in df.index:
+        r = df.loc[editing]
+        valores = {"cliente":r["CLIENTE"],"numero":r["NRO SOLICITUD - WO"],"tipo":r["TIPO DE SOLICITUD"],"centro_costo":r.get("CENTRO DE COSTO",""),"prioridad":r["PRIORIDAD"],"cantidad_items":r["CANT - ITEMS"],"estado":r["ESTADO DE SOLICITUD"],"direccion":r["DIRECCIÓN"],"fecha":r["FECHA DE INGRESO"]}
+        titulo_form = "✏️ Editar solicitud"
+    else:
+        valores = {"cliente":CLIENTES[0],"numero":"","tipo":TIPOS[0],"centro_costo":"","prioridad":PRIORIDADES[0],"cantidad_items":0,"estado":ESTADOS[0],"direccion":DIRECCIONES[0],"fecha":str(date.today())}
+        titulo_form = "📥 Registrar nueva solicitud"
+
+    with st.form(f"solicitud_form_{st.session_state.form_version}"):
+        st.markdown(f"**{titulo_form}**")
+        a,b = st.columns(2)
+        with a:
+            cliente = st.selectbox("Cliente", CLIENTES, index=CLIENTES.index(valores["cliente"]) if valores["cliente"] in CLIENTES else 0)
+            numero = st.text_input("Nro. Solicitud / WO", value=str(valores["numero"] or ""), placeholder="Ejemplo: SE2-26-17658")
+            tipo = st.selectbox("Tipo de Solicitud", TIPOS, index=TIPOS.index(valores["tipo"]) if valores["tipo"] in TIPOS else 0)
+            centro_actual = str(valores.get("centro_costo", "") or "").strip()
+            opciones_centro = CENTROS_COSTO.copy()
+            if centro_actual and centro_actual not in opciones_centro:
+                opciones_centro.append(centro_actual)
+            centro_costo = st.selectbox(
+                "Centro de Costo",
+                opciones_centro,
+                index=opciones_centro.index(centro_actual) if centro_actual in opciones_centro else 0,
+            )
+            prioridad = st.selectbox("Prioridad", PRIORIDADES, index=PRIORIDADES.index(valores["prioridad"]) if valores["prioridad"] in PRIORIDADES else 0)
+        with b:
+            try: cantidad_default = max(0, int(float(str(valores.get("cantidad_items",0)).replace(",","."))))
+            except Exception: cantidad_default = 0
+            cantidad_items = st.number_input("Cantidad de ítems", min_value=0, step=1, value=cantidad_default, format="%d")
+            estado = st.selectbox("Estado de Solicitud", ESTADOS, index=ESTADOS.index(valores["estado"]) if valores["estado"] in ESTADOS else 0)
+            direccion = st.selectbox("Dirección", DIRECCIONES, index=DIRECCIONES.index(valores["direccion"]) if valores["direccion"] in DIRECCIONES else 0)
+            try: fecha_default = pd.to_datetime(valores["fecha"], dayfirst=True, errors="coerce").date()
+            except Exception: fecha_default = date.today()
+            if pd.isna(fecha_default): fecha_default = date.today()
+            fecha = st.date_input("Fecha de ingreso", value=fecha_default)
+        x,y = st.columns([4,1])
+        with x: guardar = st.form_submit_button("💾 ACTUALIZAR REGISTRO" if editing is not None else "📥 AGREGAR REGISTRO", use_container_width=True)
+        with y: cancelar = st.form_submit_button("✕ CANCELAR", use_container_width=True)
+
+    if cancelar:
+        liberar_bloqueo_edicion()
+        st.session_state.editing = None
+        st.session_state.editing_key = ""
+        st.session_state.form_version += 1
+        st.rerun()
+
+    if guardar:
+        if editing is not None and not puede_modificar():
+            st.error("⛔ Tu usuario no tiene permiso para editar solicitudes.")
+            st.stop()
+        if editing is None and not puede_modificar():
+            st.error("⛔ Tu usuario no tiene permiso para registrar solicitudes.")
+            st.stop()
+        numero_norm = normalizar(numero)
+        if not numero_norm or cliente == CLIENTES[0] or tipo == TIPOS[0] or prioridad == PRIORIDADES[0] or estado == ESTADOS[0] or direccion == DIRECCIONES[0]:
+            st.error("Completa todos los campos obligatorios antes de guardar.")
+        else:
+            try:
+                latest = cargar_solicitudes_supabase()
+                nuevo = {"CLIENTE":cliente,"NRO SOLICITUD - WO":numero.strip(),"TIPO DE SOLICITUD":tipo,"CENTRO DE COSTO":centro_costo.strip(),"PRIORIDAD":prioridad,"CANT - ITEMS":int(cantidad_items),"ESTADO DE SOLICITUD":estado,"DIRECCIÓN":direccion,"FECHA DE INGRESO":fecha.isoformat()}
+                repetidos = latest[latest["NRO SOLICITUD - WO"].map(normalizar).eq(numero_norm)]
+                if editing is not None:
+                    registro_id = int(df.loc[editing,"_ID_"])
+                    if not repetidos.empty and int(repetidos.iloc[0]["_ID_"]) != registro_id:
+                        st.error("Ya existe otra solicitud con ese Nro. Solicitud / WO.")
+                    else:
+                        guardar_solicitud_supabase(nuevo, registro_id)
+                        st.session_state.rows = cargar_solicitudes_supabase()
+                        liberar_bloqueo_edicion()
+                        st.session_state.editing = None
+                        st.session_state.editing_key = ""
+                        st.success("✅ Registro actualizado correctamente en Supabase.")
+                        st.rerun()
+                else:
+                    if not repetidos.empty:
+                        st.error("Ya existe una solicitud con ese Nro. Solicitud / WO.")
+                    else:
+                        guardar_solicitud_supabase(nuevo)
+                        st.session_state.rows = cargar_solicitudes_supabase()
+                        liberar_bloqueo_edicion()
+                        st.success("✅ Nueva solicitud agregada correctamente en Supabase.")
+                        st.rerun()
+            except Exception as e:
+                liberar_bloqueo_edicion()
+                st.error(f"❌ No se pudo guardar en Supabase: {e}")
+
+# =========================================================
+# FILTROS
+# =========================================================
+st.markdown("### Resultados")
+buscar_col, cliente_col, estado_col, fecha_col = st.columns([3,1.4,1.4,1.2])
+with buscar_col:
+    buscar = st.text_input("Buscar solicitud...", placeholder="Cliente, WO, dirección, tipo...", key="buscar_solicitud_live")
+with cliente_col:
+    filtro_cliente = st.selectbox("Cliente", ["TODOS"] + CLIENTES[1:], key="filtro_cliente")
+with estado_col:
+    filtro_estado = st.selectbox("Estado", ["TODOS"] + ESTADOS[1:], key="filtro_estado_solicitud")
+with fecha_col:
+    filtro_fecha = st.date_input("📅 Fecha", value=None, key="filtro_fecha_solicitud")
+
+vista = df.copy()
+if buscar:
+    texto = normalizar(buscar)
+    vista = vista[vista.astype(str).apply(lambda col: col.map(lambda x: texto in normalizar(x))).any(axis=1)]
+if filtro_cliente != "TODOS":
+    vista = vista[vista["CLIENTE"].map(normalizar).eq(normalizar(filtro_cliente))]
+if filtro_estado != "TODOS":
+    vista = vista[vista["ESTADO DE SOLICITUD"].map(normalizar).eq(normalizar(filtro_estado))]
+if filtro_fecha:
+    fechas = pd.to_datetime(vista["FECHA DE INGRESO"], dayfirst=True, errors="coerce")
+    vista = vista[fechas.dt.date.eq(filtro_fecha)]
+
+# =========================================================
+# ALERTAS DE ATENCIÓN POR ANTIGÜEDAD
+# =========================================================
+# Las solicitudes ENVIADAS, ENTREGADAS o ANULADAS no generan alertas.
+# 1 día de antigüedad  -> advertencia
+# 2 o más días          -> atención urgente
+estados_sin_alerta = {"ENVIADO", "ENTREGADO", "ANULADO"}
+
+alertas = df.copy()
+fechas_alerta = pd.to_datetime(alertas["FECHA DE INGRESO"], dayfirst=True, errors="coerce")
+alertas["_FECHA_ALERTA"] = fechas_alerta.dt.date
+alertas["_DIAS_ALERTA"] = (pd.Timestamp(date.today()) - fechas_alerta.dt.normalize()).dt.days
+
+alertas = alertas[
+    (~alertas["ESTADO DE SOLICITUD"].astype(str).str.strip().str.upper().isin(estados_sin_alerta))
+    & alertas["_FECHA_ALERTA"].notna()
+    & (alertas["_DIAS_ALERTA"] >= 1)
+]
+
+if not alertas.empty:
+    urgentes = alertas[alertas["_DIAS_ALERTA"] >= 2]
+    advertencias = alertas[alertas["_DIAS_ALERTA"] == 1]
+
+    st.markdown("### 🔔 Alertas de atención")
+    met1, met2, met3 = st.columns(3)
+    with met1:
+        st.metric("🚨 Atención urgente (2+ días)", len(urgentes))
+    with met2:
+        st.metric("⚠️ Atención (1 día)", len(advertencias))
+    with met3:
+        st.metric("📌 Total pendientes", len(alertas))
+
+    # Botón desplegable para no ocupar espacio con las tablas de alertas.
+    with st.expander("🔽 Ver tabla de alertas de atención", expanded=False):
+        if not urgentes.empty:
+            st.error(
+                f"🚨 Hay **{len(urgentes)} solicitud(es)** con 2 o más días de antigüedad que requieren atención urgente."
+            )
+            detalle_urg = urgentes[["NRO SOLICITUD - WO", "CLIENTE", "FECHA DE INGRESO", "ESTADO DE SOLICITUD", "_DIAS_ALERTA"]].copy()
+            detalle_urg["ATENCIÓN"] = detalle_urg["_DIAS_ALERTA"].map(lambda x: f"🚨 {int(x)} días")
+            detalle_urg = detalle_urg.drop(columns=["_DIAS_ALERTA"])
+            st.dataframe(detalle_urg, use_container_width=True, hide_index=True)
+
+        if not advertencias.empty:
+            st.warning(
+                f"⚠️ Hay **{len(advertencias)} solicitud(es)** que llevan 1 día desde su registro."
+            )
+            detalle_adv = advertencias[["NRO SOLICITUD - WO", "CLIENTE", "FECHA DE INGRESO", "ESTADO DE SOLICITUD"]].copy()
+            detalle_adv["ATENCIÓN"] = "⚠️ 1 día"
+            st.dataframe(detalle_adv, use_container_width=True, hide_index=True)
+else:
+    st.success("✅ No hay solicitudes pendientes con más de 1 día de antigüedad que requieran atención.")
+
+st.caption(f"{len(vista)} de {len(df)} registros")
+
+if len(vista):
+    tabla = vista[COLS].copy()
+    tabla["_INDICE_REAL_"] = vista.index
+    tabla["✏️ EDITAR"] = False
+    tabla["🗑️ ELIMINAR"] = False
+
+    # =====================================================
+    # COLORES VISUALES PARA ESTADO Y PRIORIDAD
+    # =====================================================
+    # Se muestran como indicadores de color dentro de la
+    # tabla sin modificar los valores originales de Supabase.
+    estado_colores = {
+        "POR EXTRAER": "🟡 POR EXTRAER",
+        "POR REASIGNAR": "🟣 POR REASIGNAR",
+        "POR ENVIAR": "🟠 POR ENVIAR",
+        "ENTREGADO": "🟢 ENTREGADO",
+        "ENVIADO": "🔵 ENVIADO",
+        "ANULADO": "🔴 ANULADO",
+        "POR ETIQUETAR": "🟡 POR ETIQUETAR",
+    }
+
+    prioridad_colores = {
+        "RUSH": "🔴 RUSH",
+        "TURNO SIGUIENTE": "🟠 TURNO SIGUIENTE",
+        "NORMAL": "🟢 NORMAL",
+    }
+
+    tabla["ESTADO DE SOLICITUD"] = (
+        tabla["ESTADO DE SOLICITUD"]
+        .map(lambda x: estado_colores.get(str(x).strip(), str(x)))
+    )
+
+    tabla["PRIORIDAD"] = (
+        tabla["PRIORIDAD"]
+        .map(lambda x: prioridad_colores.get(str(x).strip(), str(x)))
+    )
+    resultado = st.data_editor(
+        tabla,
+        use_container_width=True,
+        hide_index=True,
+        height=470,
+        key=f"tabla_solicitudes_{st.session_state.tabla_version}",
+        disabled=COLS + ["_INDICE_REAL_"],
+        column_config={
+            "_INDICE_REAL_": None,
+
+            # Anchos fijos para que todas las columnas entren de forma
+            # equilibrada en la pantalla.
+            "CLIENTE": st.column_config.TextColumn("CLIENTE", width=130),
+            "NRO SOLICITUD - WO": st.column_config.TextColumn("N° SOLICITUD / WO", width=160),
+            "TIPO DE SOLICITUD": st.column_config.TextColumn("TIPO", width=125),
+            "CENTRO DE COSTO": st.column_config.TextColumn("CENTRO DE COSTO", width=125),
+            "PRIORIDAD": st.column_config.TextColumn("PRIORIDAD", width=160),
+            "CANT - ITEMS": st.column_config.NumberColumn(
+                "ÍTEMS", min_value=0, step=1, format="%d", width=70
+            ),
+            "ESTADO DE SOLICITUD": st.column_config.TextColumn("ESTADO", width=130),
+            "DIRECCIÓN": st.column_config.TextColumn("DIRECCIÓN", width=150),
+            "FECHA DE INGRESO": st.column_config.DateColumn(
+                "FECHA", format="DD/MM/YYYY", width=105
+            ),
+            "✏️ EDITAR": st.column_config.CheckboxColumn("EDIT.", default=False, width=60),
+            "🗑️ ELIMINAR": st.column_config.CheckboxColumn(
+                "ELIM.", default=False, width=60, disabled=not es_admin()
+            ),
+        },
+    )
+
+    editar = resultado[resultado["✏️ EDITAR"] == True]
+    if not editar.empty:
+        indice_real = editar.iloc[0]["_INDICE_REAL_"]
+        ok, info = adquirir_bloqueo_edicion("edición de solicitud")
+        if ok:
+            st.session_state.editing = int(indice_real)
+            st.session_state.editing_key = normalizar(df.loc[int(indice_real), "NRO SOLICITUD - WO"])
+            st.session_state.form_version += 1
+            st.session_state.tabla_version += 1
+            st.rerun()
+        else:
+            st.warning(f"🔒 {info.get('usuario', 'Otro usuario')} está editando.")
+
+    eliminar = resultado[resultado["🗑️ ELIMINAR"] == True]
+    if not es_admin():
+        eliminar = resultado.iloc[0:0]
+    if not eliminar.empty:
+        ok, info = adquirir_bloqueo_edicion("eliminación de solicitud")
+        if not ok:
+            st.warning(f"🔒 {info.get('usuario', 'Otro usuario')} está utilizando el sistema.")
+        else:
+            ids = [int(df.loc[int(i), "_ID_"]) for i in eliminar["_INDICE_REAL_"].tolist()]
+            try:
+                eliminar_solicitudes_supabase(ids)
+                st.session_state.rows = cargar_solicitudes_supabase()
+                liberar_bloqueo_edicion()
+                st.success("✅ Registro(s) eliminado(s) correctamente de Supabase.")
+                st.session_state.tabla_version += 1
+                st.rerun()
+            except Exception as e:
+                liberar_bloqueo_edicion()
+                st.error(f"❌ No se pudo eliminar: {e}")
+else:
+    st.info("No hay registros que coincidan con los filtros.")
+
+# =========================================================
+# ARCHIVO MENSUAL Y LIMPIEZA DE BASE DE DATOS
+# Solo ADMIN puede eliminar registros históricos.
+# Primero se descarga el mes y luego se solicita confirmación
+# explícita antes de borrar esos registros de Supabase.
+# =========================================================
+if es_admin():
+    with st.expander("📦 ARCHIVAR Y LIMPIAR SOLICITUDES POR MES", expanded=False):
+        st.warning(
+            "⚠️ Esta opción descarga los registros de un mes y permite eliminarlos de Supabase. "
+            "Se recomienda conservar el archivo Excel como respaldo antes de eliminar."
+        )
+
+        hoy = date.today()
+        anos_disponibles = sorted(
+            {d.year for d in pd.to_datetime(df["FECHA DE INGRESO"], errors="coerce").dropna()},
+            reverse=True,
+        )
+        if hoy.year not in anos_disponibles:
+            anos_disponibles.insert(0, hoy.year)
+        meses = {
+            1: "ENERO", 2: "FEBRERO", 3: "MARZO", 4: "ABRIL",
+            5: "MAYO", 6: "JUNIO", 7: "JULIO", 8: "AGOSTO",
+            9: "SEPTIEMBRE", 10: "OCTUBRE", 11: "NOVIEMBRE", 12: "DICIEMBRE"
+        }
+
+        ac1, ac2 = st.columns(2)
+        with ac1:
+            anio_archivo = st.selectbox(
+                "Año", anos_disponibles, key="anio_archivo_mensual"
+            )
+        with ac2:
+            mes_archivo = st.selectbox(
+                "Mes", list(meses.keys()),
+                format_func=lambda m: meses[m],
+                key="mes_archivo_mensual"
+            )
+
+        import calendar
+        ultimo_dia = calendar.monthrange(anio_archivo, mes_archivo)[1]
+        fecha_inicio_archivo = date(anio_archivo, mes_archivo, 1)
+        fecha_fin_archivo = date(anio_archivo, mes_archivo, ultimo_dia)
+        fecha_fin_exclusiva = date(anio_archivo + (mes_archivo == 12), 1 if mes_archivo == 12 else mes_archivo + 1, 1)
+
+        try:
+            registros_mes = cargar_solicitudes_mes_supabase(
+                fecha_inicio_archivo, fecha_fin_exclusiva
+            )
+            cantidad_mes = len(registros_mes)
+
+            st.info(
+                f"📅 {meses[mes_archivo]} {anio_archivo}: **{cantidad_mes} registro(s)** encontrados "
+                f"({fecha_inicio_archivo.strftime('%d/%m/%Y')} al {fecha_fin_archivo.strftime('%d/%m/%Y')})."
+            )
+
+            if cantidad_mes > 0:
+                archivo_mes = excel_bytes_mensual(registros_mes[COLS])
+                st.info(
+                    "📊 El Excel incluirá el detalle completo con **NRO SOLICITUD - WO**, "
+                    "además de resúmenes por estado, prioridad, SE1/SE2/SE3/SR1/SR2 y un resumen general."
+                )
+
+                _, col_descarga_mes, _ = st.columns([1, 2, 1])
+                with col_descarga_mes:
+                    st.download_button(
+                        "📥 DESCARGAR ESTE MES EN EXCEL",
+                        data=archivo_mes,
+                        file_name=f"SOLICITUDES_{anio_archivo}_{mes_archivo:02d}_{meses[mes_archivo]}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="descargar_archivo_mensual",
+                    )
+
+                confirmar_borrado = st.checkbox(
+                    "Confirmo que ya descargué y guardé el archivo de este mes y deseo eliminar estos registros de Supabase.",
+                    key="confirmar_borrado_mensual",
+                )
+
+                if st.button(
+                    f"🗑️ ELIMINAR {cantidad_mes} REGISTRO(S) DE {meses[mes_archivo]} {anio_archivo}",
+                    type="secondary",
+                    use_container_width=True,
+                    disabled=not confirmar_borrado,
+                    key="eliminar_mes_supabase",
+                ):
+                    ids_mes = [int(x) for x in registros_mes["_ID_"].tolist() if pd.notna(x)]
+                    try:
+                        eliminar_solicitudes_supabase(ids_mes)
+                        st.session_state.rows = cargar_solicitudes_supabase()
+                        st.session_state.confirmar_borrado_mensual = False
+                        st.success(
+                            f"✅ Se eliminaron {len(ids_mes)} registro(s) de {meses[mes_archivo]} {anio_archivo} de Supabase."
+                        )
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ No se pudo completar la limpieza mensual: {e}")
+            else:
+                st.success("✅ No existen registros para el mes seleccionado.")
+        except Exception as e:
+            st.error(f"❌ No se pudo consultar el mes seleccionado: {e}")
+
+# =========================================================
+# DESCARGA
+# =========================================================
+_, col_descarga_filtrados, _ = st.columns([1, 2, 1])
+with col_descarga_filtrados:
+    st.download_button(
+        "📥 DESCARGAR FILTRADOS",
+        data=excel_bytes(vista[COLS], None),
+        file_name=f"SOLICITUDES_FILTRADAS_{date.today().isoformat()}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+
+st.markdown('<div class="footer"><strong>JC Control de Solicitudes — Almacén</strong><br>©JuanCarlosRamos - 2026 — Todos los derechos reservados</div>', unsafe_allow_html=True)
